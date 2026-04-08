@@ -1,4 +1,4 @@
-﻿#!/usr/bin/env powershell
+#!/usr/bin/env powershell
 
 <#
 .SYNOPSIS
@@ -31,7 +31,8 @@ $QwenTempPath = "$env:USERPROFILE\.qwen\tmp"
 $QwenProjectChatsPath = "$env:USERPROFILE\.qwen\projects"
 
 # 项目路径配置（可修改为实际项目路径）
-$ProjectCwd = "D:\WorkSpace\pum"  # 修改为你的项目路径
+# 设置为 $null 或空数组则统计所有项目，设置为具体路径数组则只统计指定项目
+$ProjectCwd = @()  # 空数组 = 统计所有项目
 
 $Today = Get-Date -Format "yyyy-MM-dd"
 $TodayStart = Get-Date "$Today 00:00:00"
@@ -110,14 +111,15 @@ function Get-TokenStats {
     $outputTokens = 0
     $cacheTokens = 0
     $apiCalls = 0
-    
+
     foreach ($log in $Logs) {
         # 如果有实际 Token 数据，使用实际值
         if ($log.InputTokens -gt 0 -or $log.OutputTokens -gt 0) {
             $inputTokens += $log.InputTokens
             $outputTokens += $log.OutputTokens
             $cacheTokens += $log.CachedTokens
-            if ($log.InputTokens -gt 0) { $apiCalls++ }
+            # 每次 assistant 回复代表一次 API 调用
+            if ($log.Type -eq "assistant") { $apiCalls++ }
         } else {
             # 否则使用估算
             $tokens = Get-EstimatedTokens -Text $log.Message
@@ -156,18 +158,37 @@ function Get-AllLogs {
                             if ([string]::IsNullOrWhiteSpace($line)) { continue }
                             $log = $line | ConvertFrom-Json -ErrorAction Stop
                             
-                            # 只统计当前项目（cwd 匹配）
-                            if ($log.cwd -ne $ProjectCwd) { continue }
+                            # 只统计配置的项目（cwd 匹配）
+                            if ($ProjectCwd -and $ProjectCwd.Count -gt 0) {
+                                if ($ProjectCwd -notcontains $log.cwd) { continue }
+                            }
                             
+                            # 提取 Token 数据：根据不同消息类型使用不同字段
+                            $inputTokens = 0
+                            $outputTokens = 0
+                            $cachedTokens = 0
+
+                            if ($log.type -eq "assistant" -and $log.usageMetadata) {
+                                # assistant 消息使用 usageMetadata 字段（驼峰命名）
+                                $inputTokens = if ($log.usageMetadata.promptTokenCount) { $log.usageMetadata.promptTokenCount } else { 0 }
+                                $outputTokens = if ($log.usageMetadata.candidatesTokenCount) { $log.usageMetadata.candidatesTokenCount } else { 0 }
+                                $cachedTokens = if ($log.usageMetadata.cachedContentTokenCount) { $log.usageMetadata.cachedContentTokenCount } else { 0 }
+                            } elseif ($log.type -eq "system" -and $log.systemPayload -and $log.systemPayload.uiEvent) {
+                                # system 消息使用 systemPayload.uiEvent 字段
+                                $inputTokens = if ($log.systemPayload.uiEvent.input_token_count) { $log.systemPayload.uiEvent.input_token_count } else { 0 }
+                                $outputTokens = if ($log.systemPayload.uiEvent.output_token_count) { $log.systemPayload.uiEvent.output_token_count } else { 0 }
+                                $cachedTokens = if ($log.systemPayload.uiEvent.cached_content_token_count) { $log.systemPayload.uiEvent.cached_content_token_count } else { 0 }
+                            }
+
                             $allLogs.Add([PSCustomObject]@{
                                 SessionId = $log.sessionId
                                 Timestamp = [DateTime]$log.timestamp
                                 Type = $log.type
                                 Message = if ($log.message) { $log.message.parts.text } else { "" }
                                 SourceFile = $jsonlFile.Name
-                                InputTokens = if ($log.systemPayload.uiEvent.input_token_count) { $log.systemPayload.uiEvent.input_token_count } else { 0 }
-                                OutputTokens = if ($log.systemPayload.uiEvent.output_token_count) { $log.systemPayload.uiEvent.output_token_count } else { 0 }
-                                CachedTokens = if ($log.systemPayload.uiEvent.cached_content_token_count) { $log.systemPayload.uiEvent.cached_content_token_count } else { 0 }
+                                InputTokens = $inputTokens
+                                OutputTokens = $outputTokens
+                                CachedTokens = $cachedTokens
                             })
                         }
                     } catch {
