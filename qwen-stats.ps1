@@ -252,6 +252,36 @@ function Filter-TodayLogs {
     }
 }
 
+# 过滤昨日数据
+function Filter-YesterdayLogs {
+    param([System.Collections.Generic.List[PSObject]]$AllLogs)
+
+    $Yesterday = (Get-Date).AddDays(-1).ToString("yyyy-MM-dd")
+    $YesterdayStart = Get-Date "$Yesterday 00:00:00"
+    $YesterdayEnd = Get-Date "$Yesterday 23:59:59"
+
+    return $AllLogs | Where-Object {
+        $_.Timestamp -ge $YesterdayStart -and $_.Timestamp -le $YesterdayEnd
+    }
+}
+
+# 过滤本周数据
+function Filter-WeekLogs {
+    param([System.Collections.Generic.List[PSObject]]$AllLogs)
+
+    $Today = Get-Date
+    $DayOfWeek = [int]$Today.DayOfWeek
+    # 将周日(0)转换为7，使周一为0，周日为6
+    if ($DayOfWeek -eq 0) { $DayOfWeek = 7 }
+    $DaysFromMonday = $DayOfWeek - 1
+    $WeekStart = $Today.AddDays(-$DaysFromMonday).Date
+    $WeekEnd = $WeekStart.AddDays(6).AddHours(23).AddMinutes(59).AddSeconds(59)
+
+    return $AllLogs | Where-Object {
+        $_.Timestamp -ge $WeekStart -and $_.Timestamp -le $WeekEnd
+    }
+}
+
 # 过滤月份数据
 function Filter-MonthLogs {
     param([System.Collections.Generic.List[PSObject]]$AllLogs)
@@ -343,10 +373,24 @@ function Show-Report {
     if ($Tokens -or $Stats.TokenStats) {
         Write-Header "📊 Token 统计"
         Write-Stat "API 调用次数" "$($Stats.TokenStats.ApiCalls) 次" "Cyan"
-        Write-Stat "当日输入总 Tokens" "$($Stats.TokenStats.InputTokens)" "Green"
-        Write-Stat "当日输出总 Tokens" "$($Stats.TokenStats.OutputTokens)" "Green"
-        Write-Stat "当日缓存 Tokens" "$($Stats.TokenStats.CacheTokens)" "Yellow"
-        Write-Stat "当日总计 Tokens" "$($Stats.TokenStats.TotalTokens)" "Cyan"
+        
+        # 根据统计周期动态显示标签
+        $periodLabel = "当日"
+        if ($Stats.Period -like "*昨日*") {
+            $periodLabel = "昨日"
+        } elseif ($Stats.Period -like "*本周*") {
+            $periodLabel = "本周"
+        } elseif ($Stats.Period -like "*全部*") {
+            $periodLabel = "总计"
+        } elseif ($Stats.Period -match '^\d{4}-\d{2}$') {
+            $periodLabel = "本月"
+        }
+        
+        Write-Stat "$periodLabel 输入总 Tokens" "$($Stats.TokenStats.InputTokens)" "Green"
+        Write-Stat "$periodLabel 输出总 Tokens" "$($Stats.TokenStats.OutputTokens)" "Green"
+        Write-Stat "$periodLabel 缓存 Tokens" "$($Stats.TokenStats.CacheTokens)" "Yellow"
+        Write-Stat "$periodLabel 总计 Tokens" "$($Stats.TokenStats.TotalTokens)" "Cyan"
+        
         if ($Stats.TokenStats.ApiCalls -gt 0) {
             Write-Host "  ✓ 数据来源：实际 API 调用统计" -ForegroundColor Green
         } else {
@@ -415,21 +459,57 @@ if ($All) {
         Show-Report -Stats $stats
     }
 } else {
-    # 仅统计今日
+    # 默认显示今日、昨日和本周统计
+    
+    # 今日统计
     $todayLogs = Filter-TodayLogs -AllLogs $allLogs
-
     if ($todayLogs.Count -eq 0) {
         Write-Host "`n  ⚠️  今日暂无调用记录" -ForegroundColor Yellow
-        Write-Host "  提示：使用 -All 参数查看所有历史统计`n" -ForegroundColor Gray
-        if ($Tokens) {
-            Write-Host "  使用 -Tokens 参数查看 Token 统计`n" -ForegroundColor Gray
-        }
     } else {
         $stats = Get-UsageStats -Logs $todayLogs -Period "今日 ($Today)"
         if ($Tokens) {
             $stats.TokenStats = Get-TokenStats -Logs $todayLogs
         }
         Show-Report -Stats $stats
+    }
+    
+    # 昨日统计
+    $yesterdayLogs = Filter-YesterdayLogs -AllLogs $allLogs
+    $Yesterday = (Get-Date).AddDays(-1).ToString("yyyy-MM-dd")
+    if ($yesterdayLogs.Count -eq 0) {
+        Write-Host "`n  ⚠️  昨日暂无调用记录" -ForegroundColor Yellow
+    } else {
+        $stats = Get-UsageStats -Logs $yesterdayLogs -Period "昨日 ($Yesterday)"
+        if ($Tokens) {
+            $stats.TokenStats = Get-TokenStats -Logs $yesterdayLogs
+        }
+        Show-Report -Stats $stats
+    }
+    
+    # 本周统计
+    $weekLogs = Filter-WeekLogs -AllLogs $allLogs
+    $TodayDate = Get-Date
+    $DayOfWeek = [int]$TodayDate.DayOfWeek
+    if ($DayOfWeek -eq 0) { $DayOfWeek = 7 }
+    $DaysFromMonday = $DayOfWeek - 1
+    $WeekStart = $TodayDate.AddDays(-$DaysFromMonday).ToString("yyyy-MM-dd")
+    $WeekEnd = $TodayDate.AddDays(-$DaysFromMonday).AddDays(6).ToString("yyyy-MM-dd")
+    
+    if ($weekLogs.Count -eq 0) {
+        Write-Host "`n  ⚠️  本周暂无调用记录" -ForegroundColor Yellow
+    } else {
+        $stats = Get-UsageStats -Logs $weekLogs -Period "本周 ($WeekStart ~ $WeekEnd)"
+        if ($Tokens) {
+            $stats.TokenStats = Get-TokenStats -Logs $weekLogs
+        }
+        Show-Report -Stats $stats
+    }
+    
+    if ($todayLogs.Count -eq 0 -and $yesterdayLogs.Count -eq 0 -and $weekLogs.Count -eq 0) {
+        Write-Host "`n  提示：使用 -All 参数查看所有历史统计`n" -ForegroundColor Gray
+        if ($Tokens) {
+            Write-Host "  使用 -Tokens 参数查看 Token 统计`n" -ForegroundColor Gray
+        }
     }
 }
 
